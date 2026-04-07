@@ -1,0 +1,45 @@
+# 🔹 Python
+__pycache__/
+*.py[cod]
+*$py.class
+
+# 🔹 Virtual Environment
+.venv/
+venv/
+env/
+
+# 🔹 Environment Variables
+.env
+
+# 🔹 Logs
+*.log
+
+# 🔹 OS files
+.DS_Store
+Thumbs.db
+
+# 🔹 IDE / Editor
+.vscode/
+.idea/
+
+# 🔹 Jupyter Notebook
+.ipynb_checkpoints/
+
+# 🔹 Build / Dist
+build/
+dist/
+*.egg-info/
+
+# 🔹 Model files (optional – if large)
+*.h5
+*.pt
+*.pth
+*.ckpt
+
+# 🔹 Data files (optional – if large datasets)
+data/
+datasets/
+
+# 🔹 Cache
+.cache/
+

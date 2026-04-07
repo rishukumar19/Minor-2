@@ -1,0 +1,918 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>HeatFormer — Raipur Heat Risk Monitor</title>
+  <meta name="description" content="Real-time urban heat stress risk mapping for Raipur using HeatFormer AI." />
+
+  <!-- Leaflet -->
+  <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
+  <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+
+  <!-- Google Fonts -->
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet" />
+
+  <style>
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+    :root {
+      --bg:        #07080f;
+      --surface:   #0d0f1a;
+      --surface2:  #12152a;
+      --border:    rgba(255,255,255,0.07);
+      --border-hl: rgba(255,120,50,0.3);
+      --text:      #e8eaf0;
+      --muted:     #7a8099;
+      --dim:       #3a3f5c;
+
+      --r0: #10b981;
+      --r1: #f59e0b;
+      --r2: #f97316;
+      --r3: #ef4444;
+
+      --accent:  #ff6b35;
+      --accent2: #ff3d6b;
+    }
+
+    html, body { height: 100%; font-family: 'Inter', sans-serif; background: var(--bg); color: var(--text); }
+
+    /* ── Layout shell ───────────────────────────────────────── */
+    .shell {
+      display: grid;
+      grid-template-rows: 60px 1fr;
+      grid-template-columns: 1fr 360px;
+      height: 100vh;
+      overflow: hidden;
+    }
+
+    /* ── Top bar ─────────────────────────────────────────────── */
+    .topbar {
+      grid-column: 1 / -1;
+      display: flex;
+      align-items: center;
+      padding: 0 20px;
+      background: var(--surface);
+      border-bottom: 1px solid var(--border);
+      gap: 16px;
+      z-index: 500;
+    }
+
+    .brand {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      flex-shrink: 0;
+    }
+
+    .brand-icon {
+      width: 36px; height: 36px;
+      background: linear-gradient(135deg, var(--accent), var(--accent2));
+      border-radius: 9px;
+      display: flex; align-items: center; justify-content: center;
+      font-size: 18px;
+      box-shadow: 0 0 16px rgba(255,107,53,0.4);
+    }
+
+    .brand h1 {
+      font-size: 17px;
+      font-weight: 700;
+      background: linear-gradient(90deg, #fff 40%, var(--accent));
+      -webkit-background-clip: text;
+      -webkit-text-fill-color: transparent;
+      background-clip: text;
+      letter-spacing: -0.3px;
+    }
+
+    .brand span {
+      font-size: 11px;
+      color: var(--muted);
+      font-weight: 400;
+    }
+
+    .topbar-center { flex: 1; display: flex; align-items: center; gap: 12px; padding: 0 12px; }
+
+    .badge {
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      padding: 5px 12px;
+      border-radius: 20px;
+      font-size: 11px;
+      font-weight: 500;
+      border: 1px solid var(--border);
+      color: var(--muted);
+      background: var(--surface2);
+      white-space: nowrap;
+    }
+
+    .live-dot {
+      width: 7px; height: 7px;
+      background: var(--r0);
+      border-radius: 50%;
+      animation: pulse 2s infinite;
+    }
+    @keyframes pulse {
+      0%,100% { box-shadow: 0 0 0 0 rgba(16,185,129,.4); }
+      50%      { box-shadow: 0 0 0 5px rgba(16,185,129,0); }
+    }
+
+    .api-pill {
+      font-family: 'JetBrains Mono', monospace;
+      font-size: 10px;
+      padding: 4px 10px;
+      border-radius: 6px;
+      background: rgba(16,185,129,.08);
+      border: 1px solid rgba(16,185,129,.2);
+      color: var(--r0);
+    }
+    .api-pill.offline { background: rgba(239,68,68,.08); border-color: rgba(239,68,68,.2); color: var(--r3); }
+
+    .opacity-ctrl {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      font-size: 11px;
+      color: var(--muted);
+    }
+    .opacity-ctrl input[type=range] {
+      width: 80px;
+      accent-color: var(--accent);
+    }
+
+    /* ── Map area ─────────────────────────────────────────────── */
+    #map {
+      grid-column: 1;
+      grid-row: 2;
+      width: 100%;
+      height: 100%;
+      background: #0a0c14;
+    }
+
+    /* ── Sidebar ─────────────────────────────────────────────── */
+    .sidebar {
+      grid-column: 2;
+      grid-row: 2;
+      background: var(--surface);
+      border-left: 1px solid var(--border);
+      overflow-y: auto;
+      display: flex;
+      flex-direction: column;
+      gap: 0;
+    }
+
+    .sidebar::-webkit-scrollbar { width: 4px; }
+    .sidebar::-webkit-scrollbar-thumb { background: var(--dim); border-radius: 2px; }
+
+    /* ── Sidebar sections ─────────────────────────────────────── */
+    .section {
+      padding: 18px 20px;
+      border-bottom: 1px solid var(--border);
+    }
+
+    .section-title {
+      font-size: 10px;
+      font-weight: 700;
+      text-transform: uppercase;
+      letter-spacing: .1em;
+      color: var(--dim);
+      margin-bottom: 14px;
+    }
+
+    /* ── Mode tabs ──────────────────────────────────────────── */
+    .mode-tabs {
+      display: flex;
+      gap: 0;
+      background: var(--surface2);
+      border-radius: 8px;
+      padding: 3px;
+      margin-bottom: 14px;
+    }
+    .mode-tab {
+      flex: 1;
+      padding: 7px;
+      text-align: center;
+      font-size: 11px;
+      font-weight: 600;
+      border: none;
+      border-radius: 6px;
+      background: transparent;
+      color: var(--muted);
+      cursor: pointer;
+      transition: background .2s, color .2s;
+      font-family: 'Inter', sans-serif;
+    }
+    .mode-tab.active {
+      background: var(--surface);
+      color: var(--text);
+      box-shadow: 0 1px 4px rgba(0,0,0,.3);
+    }
+
+    /* ── Run button ───────────────────────────────────────────── */
+    .run-btn {
+      width: 100%;
+      padding: 13px;
+      background: linear-gradient(135deg, var(--accent), var(--accent2));
+      border: none;
+      border-radius: 10px;
+      color: #fff;
+      font-family: 'Inter', sans-serif;
+      font-size: 14px;
+      font-weight: 600;
+      cursor: pointer;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      gap: 8px;
+      transition: transform .15s, box-shadow .15s, opacity .15s;
+      box-shadow: 0 4px 18px rgba(255,107,53,.35);
+    }
+    .run-btn:hover:not(:disabled) { transform: translateY(-2px); box-shadow: 0 8px 28px rgba(255,107,53,.5); }
+    .run-btn:disabled { opacity: .55; cursor: not-allowed; transform: none; }
+
+    /* ── Mini spinner ────────────────────────────────────────── */
+    .spinner {
+      width: 16px; height: 16px;
+      border: 2px solid rgba(255,255,255,.25);
+      border-top-color: #fff;
+      border-radius: 50%;
+      animation: spin .8s linear infinite;
+    }
+    @keyframes spin { to { transform: rotate(360deg); } }
+
+    /* ── Legend ──────────────────────────────────────────────── */
+    .legend-row {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 7px;
+    }
+
+    .legend-item {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      padding: 9px 11px;
+      border-radius: 8px;
+      font-size: 11px;
+      font-weight: 600;
+    }
+
+    .legend-item .swatch { width: 12px; height: 12px; border-radius: 3px; flex-shrink: 0; }
+    .legend-item.r0 { background: rgba(16,185,129,.1);  color: var(--r0); border: 1px solid rgba(16,185,129,.18); }
+    .legend-item.r1 { background: rgba(245,158,11,.1);  color: var(--r1); border: 1px solid rgba(245,158,11,.18); }
+    .legend-item.r2 { background: rgba(249,115,22,.1);  color: var(--r2); border: 1px solid rgba(249,115,22,.18); }
+    .legend-item.r3 { background: rgba(239,68,68,.1);   color: var(--r3); border: 1px solid rgba(239,68,68,.18); }
+    .r0 .swatch { background: var(--r0); }
+    .r1 .swatch { background: var(--r1); }
+    .r2 .swatch { background: var(--r2); }
+    .r3 .swatch { background: var(--r3); }
+
+    /* ── Distribution ─────────────────────────────────────────── */
+    .dist-bar {
+      height: 7px;
+      display: flex;
+      border-radius: 4px;
+      overflow: hidden;
+      gap: 2px;
+      margin-bottom: 8px;
+    }
+    .dist-seg { height: 100%; border-radius: 2px; transition: width .6s ease; }
+    .ds0 { background: var(--r0); }
+    .ds1 { background: var(--r1); }
+    .ds2 { background: var(--r2); }
+    .ds3 { background: var(--r3); }
+
+    .dist-labels { display: flex; justify-content: space-between; font-size: 10px; color: var(--muted); }
+
+    /* ── Meteo grid ───────────────────────────────────────────── */
+    .meteo-grid {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 8px;
+    }
+
+    .mtile {
+      background: var(--surface2);
+      border: 1px solid var(--border);
+      border-radius: 9px;
+      padding: 11px 13px;
+      transition: border-color .2s;
+    }
+    .mtile:hover { border-color: var(--border-hl); }
+    .mtile .lbl { font-size: 9px; text-transform: uppercase; letter-spacing: .08em; color: var(--dim); font-weight: 600; margin-bottom: 4px; }
+    .mtile .val { font-size: 20px; font-weight: 700; font-family: 'JetBrains Mono', monospace; line-height: 1; color: var(--text); }
+    .mtile .unt { font-size: 10px; color: var(--muted); font-family: 'Inter', sans-serif; font-weight: 400; margin-left: 2px; }
+    .mtile .ico { font-size: 14px; margin-bottom: 5px; display: block; }
+
+    .mtile.hot-temp { border-color: rgba(249,115,22,.2); }
+    .mtile.hot-temp .val { color: var(--r2); }
+    .mtile.hot-utci { border-color: rgba(239,68,68,.2); }
+    .mtile.hot-utci .val { color: var(--r3); }
+
+    /* ── Stats row ────────────────────────────────────────────── */
+    .stats-row {
+      display: flex;
+      gap: 0;
+    }
+
+    .stat-box {
+      flex: 1;
+      padding: 10px 12px;
+      border-right: 1px solid var(--border);
+      text-align: center;
+    }
+    .stat-box:last-child { border-right: none; }
+    .stat-box .s-lbl { font-size: 9px; text-transform: uppercase; letter-spacing: .08em; color: var(--dim); }
+    .stat-box .s-val { font-size: 16px; font-weight: 700; font-family: 'JetBrains Mono', monospace; color: var(--text); margin-top: 2px; }
+
+    /* ── Error ────────────────────────────────────────────────── */
+    .err-bar {
+      background: rgba(239,68,68,.08);
+      border: 1px solid rgba(239,68,68,.2);
+      border-radius: 8px;
+      padding: 10px 12px;
+      font-size: 11px;
+      color: #fca5a5;
+      display: none;
+      margin-top: 10px;
+    }
+    .err-bar.on { display: block; }
+
+    /* ── Sliders ─────────────────────────────────────────────── */
+    .slider-row {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      margin-bottom: 10px;
+    }
+    .slider-row label {
+      font-size: 10px;
+      text-transform: uppercase;
+      letter-spacing: .07em;
+      color: var(--muted);
+      font-weight: 600;
+      width: 70px;
+      flex-shrink: 0;
+    }
+    .slider-row input[type=range] {
+      flex: 1;
+      accent-color: var(--accent);
+      height: 3px;
+    }
+    .slider-row .sv {
+      font-size: 11px;
+      font-family: 'JetBrains Mono', monospace;
+      color: var(--text);
+      width: 38px;
+      text-align: right;
+      flex-shrink: 0;
+    }
+
+    .manual-panel { display: none; }
+    .manual-panel.active { display: block; }
+    .auto-panel { display: block; }
+    .auto-panel.hidden { display: none; }
+
+    /* ── Leaflet dark map overrides ──────────────────────────── */
+    .leaflet-container { background: #0a0c14; }
+    .leaflet-control-attribution { background: rgba(7,8,15,.7) !important; color: var(--dim) !important; font-size: 9px; }
+    .leaflet-control-attribution a { color: var(--muted) !important; }
+    .leaflet-bar { background: var(--surface) !important; border: 1px solid var(--border) !important; }
+    .leaflet-bar a { background: var(--surface) !important; color: var(--text) !important; border-bottom: 1px solid var(--border) !important; }
+    .leaflet-bar a:hover { background: var(--surface2) !important; }
+
+    /* ── Map loading overlay ──────────────────────────────────── */
+    #map-overlay {
+      position: absolute;
+      inset: 0;
+      z-index: 1000;
+      background: rgba(7,8,15,.8);
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      gap: 14px;
+      pointer-events: none;
+      transition: opacity .4s;
+    }
+    #map-overlay.hide { opacity: 0; pointer-events: none; }
+    #map-overlay .big-spin {
+      width: 48px; height: 48px;
+      border: 3px solid rgba(255,107,53,.15);
+      border-top-color: var(--accent);
+      border-radius: 50%;
+      animation: spin .9s linear infinite;
+    }
+    #map-overlay p { font-size: 13px; color: var(--muted); font-weight: 500; }
+
+    /* map wrapper for positioning */
+    #map-wrap { position: relative; grid-column: 1; grid-row: 2; }
+    #map { width: 100%; height: 100%; }
+
+    /* timestamp */
+    #ts-bar { padding: 10px 20px; font-size: 10px; color: var(--dim); font-family: 'JetBrains Mono', monospace; border-bottom: 1px solid var(--border); }
+  </style>
+</head>
+<body>
+<div class="shell">
+
+  <!-- ── Top bar ───────────────────────────────────────────── -->
+  <header class="topbar">
+    <div class="brand">
+      <div class="brand-icon">🔥</div>
+      <div>
+        <h1>HeatFormer</h1>
+        <span>Urban Heat Risk · Raipur</span>
+      </div>
+    </div>
+
+    <div class="topbar-center">
+      <div class="badge"><div class="live-dot"></div>📍 21.25°N  81.63°E</div>
+      <div class="badge">🛰️ 64 × 64 grid · ±0.27°</div>
+      <div id="api-pill" class="api-pill">⬤ Online</div>
+      <div class="opacity-ctrl">
+        <span>Overlay</span>
+        <input type="range" id="opacity-slider" min="0" max="100" value="70" />
+        <span id="opacity-val">70%</span>
+      </div>
+    </div>
+
+    <div id="src-badge" style="font-size:10px;font-family:'JetBrains Mono',monospace;color:var(--muted);display:none"></div>
+  </header>
+
+  <!-- ── Map ───────────────────────────────────────────────── -->
+  <div id="map-wrap">
+    <div id="map"></div>
+    <div id="map-overlay">
+      <div class="big-spin"></div>
+      <p id="overlay-txt">Loading HeatFormer inference…</p>
+    </div>
+  </div>
+
+  <!-- ── Sidebar ───────────────────────────────────────────── -->
+  <aside class="sidebar">
+
+    <!-- Inference tabs -->
+    <div class="section">
+      <div class="mode-tabs">
+        <button class="mode-tab active" id="tab-auto" onclick="switchTab('auto')">⚡ Auto</button>
+        <button class="mode-tab" id="tab-manual" onclick="switchTab('manual')">🖊 Manual</button>
+      </div>
+
+      <!-- Auto panel -->
+      <div class="auto-panel" id="auto-panel">
+        <button class="run-btn" id="run-btn" onclick="runInference()">
+          <span style="font-size:16px">⚡</span> Run Auto Inference
+        </button>
+      </div>
+
+      <!-- Manual panel -->
+      <div class="manual-panel" id="manual-panel">
+        <div style="font-size:10px;color:var(--dim);margin-bottom:12px;line-height:1.6">
+          Adjust conditions and inject custom arrays into the model.
+        </div>
+
+        <div class="slider-row">
+          <label>LST °C</label>
+          <input type="range" id="sl-lst" min="25" max="55" step="0.5" value="38.5"
+            oninput="document.getElementById('sv-lst').textContent=this.value+'°'">
+          <span class="sv" id="sv-lst">38.5°</span>
+        </div>
+        <div class="slider-row">
+          <label>NDVI</label>
+          <input type="range" id="sl-ndvi" min="-0.2" max="0.8" step="0.01" value="0.22"
+            oninput="document.getElementById('sv-ndvi').textContent=this.value">
+          <span class="sv" id="sv-ndvi">0.22</span>
+        </div>
+        <div class="slider-row">
+          <label>Temp</label>
+          <input type="range" id="sl-temp" min="20" max="50" step="0.5" value="36.7"
+            oninput="document.getElementById('sv-temp').textContent=this.value+'°'">
+          <span class="sv" id="sv-temp">36.7°</span>
+        </div>
+        <div class="slider-row">
+          <label>Humidity</label>
+          <input type="range" id="sl-rh" min="10" max="100" step="1" value="38"
+            oninput="document.getElementById('sv-rh').textContent=this.value+'%'">
+          <span class="sv" id="sv-rh">38%</span>
+        </div>
+        <div class="slider-row">
+          <label>Wind m/s</label>
+          <input type="range" id="sl-wind" min="0" max="15" step="0.1" value="3.1"
+            oninput="document.getElementById('sv-wind').textContent=this.value">
+          <span class="sv" id="sv-wind">3.1</span>
+        </div>
+
+        <button class="run-btn" id="run-manual-btn" onclick="runManualInference()" style="margin-top:4px">
+          <span style="font-size:16px">🖊</span> Run Manual Inference
+        </button>
+      </div>
+
+      <div class="err-bar" id="err-bar"></div>
+    </div>
+
+    <!-- Stats -->
+    <div class="section" style="padding:0">
+      <div class="stats-row">
+        <div class="stat-box">
+          <div class="s-lbl">Dominant</div>
+          <div class="s-val" id="s-dom" style="font-size:12px">—</div>
+        </div>
+        <div class="stat-box">
+          <div class="s-lbl">Extreme</div>
+          <div class="s-val" id="s-ext">—</div>
+        </div>
+        <div class="stat-box">
+          <div class="s-lbl">Hi+Ext</div>
+          <div class="s-val" id="s-hi">—</div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Distribution -->
+    <div class="section">
+      <div class="section-title">Risk Distribution</div>
+      <div class="dist-bar">
+        <div class="dist-seg ds0" id="sg0" style="width:25%"></div>
+        <div class="dist-seg ds1" id="sg1" style="width:25%"></div>
+        <div class="dist-seg ds2" id="sg2" style="width:25%"></div>
+        <div class="dist-seg ds3" id="sg3" style="width:25%"></div>
+      </div>
+      <div class="dist-labels">
+        <span id="p0">—</span><span id="p1">—</span><span id="p2">—</span><span id="p3">—</span>
+      </div>
+    </div>
+
+    <!-- Legend -->
+    <div class="section">
+      <div class="section-title">Legend</div>
+      <div class="legend-row">
+        <div class="legend-item r0"><div class="swatch"></div>Low</div>
+        <div class="legend-item r1"><div class="swatch"></div>Moderate</div>
+        <div class="legend-item r2"><div class="swatch"></div>High</div>
+        <div class="legend-item r3"><div class="swatch"></div>Extreme</div>
+      </div>
+    </div>
+
+    <!-- Meteo -->
+    <div class="section">
+      <div class="section-title">Current Conditions</div>
+      <div class="meteo-grid">
+        <div class="mtile hot-temp">
+          <span class="ico">🌡️</span>
+          <div class="lbl">Air Temp</div>
+          <div class="val" id="m-temp">—<span class="unt">°C</span></div>
+        </div>
+        <div class="mtile">
+          <span class="ico">💨</span>
+          <div class="lbl">Wind</div>
+          <div class="val" id="m-wind">—<span class="unt">km/h</span></div>
+        </div>
+        <div class="mtile">
+          <span class="ico">💧</span>
+          <div class="lbl">Humidity</div>
+          <div class="val" id="m-hum">—<span class="unt">%</span></div>
+        </div>
+        <div class="mtile">
+          <span class="ico">☀️</span>
+          <div class="lbl">MRT</div>
+          <div class="val" id="m-mrt">—<span class="unt">°C</span></div>
+        </div>
+        <div class="mtile">
+          <span class="ico">🧍</span>
+          <div class="lbl">PET</div>
+          <div class="val" id="m-pet">—<span class="unt">°C</span></div>
+        </div>
+        <div class="mtile hot-utci" id="utci-tile">
+          <span class="ico">🔥</span>
+          <div class="lbl">UTCI</div>
+          <div class="val" id="m-utci">—<span class="unt">°C</span></div>
+        </div>
+      </div>
+      <div id="meteo-ts" style="font-size:9px;color:var(--dim);margin-top:10px;font-family:'JetBrains Mono',monospace;text-align:right"></div>
+    </div>
+
+    <!-- About -->
+    <div class="section" style="background:var(--surface2);flex:1">
+      <div class="section-title">Model</div>
+      <p style="font-size:11px;color:var(--muted);line-height:1.7">
+        Dual-stream transformer fusing <b style="color:var(--text)">MODIS LST + Landsat 8/9</b>
+        spectral indices with <b style="color:var(--text)">ERA5 8-day met windows</b> to predict
+        heat stress risk at city scale.
+      </p>
+      <div style="display:flex;flex-wrap:wrap;gap:6px;margin-top:12px">
+        <span class="badge" style="font-size:9px">🛰️ MODIS MOD11A2</span>
+        <span class="badge" style="font-size:9px">🌍 Landsat 8/9 C2</span>
+        <span class="badge" style="font-size:9px">🌬️ ERA5 SL</span>
+        <span class="badge" style="font-size:9px">🤖 HeatFormer v1.1</span>
+      </div>
+      <div style="display:flex;gap:14px;margin-top:14px;font-size:10px;color:var(--muted)">
+        <a href="/docs"  target="_blank" style="color:var(--accent);text-decoration:none">API Docs ↗</a>
+        <a href="/redoc" target="_blank" style="color:var(--muted);text-decoration:none">ReDoc ↗</a>
+        <a href="/health" target="_blank" style="color:var(--muted);text-decoration:none">Health ↗</a>
+      </div>
+    </div>
+
+  </aside>
+</div>
+
+<script>
+/* ─────────────────────────────────────────────────────────────
+   Config — study area (matches .env)
+───────────────────────────────────────────────────────────── */
+const LAT   = 21.25,  LON   = 81.63,  DELTA = 0.27;
+const SOUTH = LAT - DELTA, NORTH = LAT + DELTA;
+const WEST  = LON - DELTA, EAST  = LON + DELTA;
+
+// 64×64 risk class RGBA colours
+const RGBA = [
+  [16,  185, 129],   // 0 Low      – emerald
+  [245, 158,  11],   // 1 Moderate – amber
+  [249, 115,  22],   // 2 High     – orange
+  [239,  68,  68],   // 3 Extreme  – red
+];
+const LABELS = ['Low', 'Moderate', 'High', 'Extreme'];
+const EMOJIS = ['🟢', '🟡', '🟠', '🔴'];
+
+/* ─────────────────────────────────────────────────────────────
+   Initialise Leaflet
+───────────────────────────────────────────────────────────── */
+const map = L.map('map', {
+  center: [LAT, LON],
+  zoom: 12,
+  zoomControl: true,
+  attributionControl: true,
+});
+
+// Dark basemap (CartoDB Dark Matter)
+L.tileLayer('https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png', {
+  attribution: '© <a href="https://www.openstreetmap.org/copyright">OSM</a> © <a href="https://carto.com/">CARTO</a>',
+  subdomains: 'abcd',
+  maxZoom: 19,
+}).addTo(map);
+
+// Bounds rectangle (subtle)
+L.rectangle([[SOUTH, WEST], [NORTH, EAST]], {
+  color: 'rgba(255,107,53,0.5)',
+  weight: 1.5,
+  fill: false,
+  dashArray: '5 4',
+}).addTo(map);
+
+// Study-area centre marker
+L.circleMarker([LAT, LON], {
+  radius: 4,
+  color: '#ff6b35',
+  fillColor: '#ff6b35',
+  fillOpacity: 1,
+  weight: 2,
+}).bindPopup('<b>Raipur City Centre</b><br>21.25°N, 81.63°E').addTo(map);
+
+/* ─────────────────────────────────────────────────────────────
+   Risk overlay layer
+───────────────────────────────────────────────────────────── */
+let overlayLayer = null;
+let overlayOpacity = 0.70;
+
+// Off-screen canvas for fast pixel painting
+const offCanvas = document.createElement('canvas');
+offCanvas.width  = 64;
+offCanvas.height = 64;
+const offCtx = offCanvas.getContext('2d');
+
+function riskMapToDataURL(riskMap, alpha) {
+  const imgData = offCtx.createImageData(64, 64);
+  const d = imgData.data;
+  for (let r = 0; r < 64; r++) {
+    for (let c = 0; c < 64; c++) {
+      const cls = Math.min(riskMap[r][c], 3);
+      const [R, G, B] = RGBA[cls];
+      const i = (r * 64 + c) * 4;
+      d[i]   = R; d[i+1] = G; d[i+2] = B; d[i+3] = Math.round(alpha * 255);
+    }
+  }
+  offCtx.putImageData(imgData, 0, 0);
+  return offCanvas.toDataURL();
+}
+
+function setOverlay(riskMap) {
+  if (overlayLayer) { map.removeLayer(overlayLayer); }
+  const url = riskMapToDataURL(riskMap, overlayOpacity);
+  overlayLayer = L.imageOverlay(url, [[SOUTH, WEST], [NORTH, EAST]], {
+    opacity: 1,           // baked into pixels
+    interactive: false,
+  }).addTo(map);
+  window._lastRiskMap = riskMap;
+}
+
+function redrawOverlay() {
+  if (!window._lastRiskMap) return;
+  setOverlay(window._lastRiskMap);
+}
+
+/* ─────────────────────────────────────────────────────────────
+   Opacity slider
+───────────────────────────────────────────────────────────── */
+const slider = document.getElementById('opacity-slider');
+slider.addEventListener('input', function() {
+  overlayOpacity = this.value / 100;
+  document.getElementById('opacity-val').textContent = this.value + '%';
+  redrawOverlay();
+});
+
+/* ─────────────────────────────────────────────────────────────
+   Map overlay (loading spinner)
+───────────────────────────────────────────────────────────── */
+function showMapOverlay(txt) {
+  const el = document.getElementById('map-overlay');
+  document.getElementById('overlay-txt').textContent = txt;
+  el.classList.remove('hide');
+}
+function hideMapOverlay() {
+  document.getElementById('map-overlay').classList.add('hide');
+}
+
+/* ─────────────────────────────────────────────────────────────
+   Analyse risk map → stats
+───────────────────────────────────────────────────────────── */
+function analyse(riskMap) {
+  const cnt = [0,0,0,0];
+  riskMap.forEach(row => row.forEach(v => cnt[Math.min(v,3)]++));
+  const total = 64*64;
+  const pct   = cnt.map(c => (c/total*100).toFixed(1));
+  const dom   = cnt.indexOf(Math.max(...cnt));
+  return { cnt, pct, dom };
+}
+
+function updateSidebar(stats, source) {
+  // distribution bar
+  for (let i=0; i<4; i++) {
+    document.getElementById(`sg${i}`).style.width = stats.pct[i] + '%';
+    document.getElementById(`p${i}`).textContent  = stats.pct[i] + '%';
+  }
+  // stat boxes
+  document.getElementById('s-dom').textContent = EMOJIS[stats.dom] + ' ' + LABELS[stats.dom];
+  document.getElementById('s-ext').textContent = stats.cnt[3].toLocaleString();
+  document.getElementById('s-hi').textContent  = (stats.cnt[2]+stats.cnt[3]).toLocaleString();
+  // source
+  const sb = document.getElementById('src-badge');
+  sb.textContent = source === 'cache' ? '🗂 Cached' : '✨ Fresh';
+  sb.style.display = 'block';
+}
+
+/* ─────────────────────────────────────────────────────────────
+   Run auto inference
+───────────────────────────────────────────────────────────── */
+async function runInference() {
+  const btn = document.getElementById('run-btn');
+  btn.disabled = true;
+  btn.innerHTML = '<div class="spinner"></div> Running…';
+  showMapOverlay('Running HeatFormer inference…');
+  document.getElementById('err-bar').classList.remove('on');
+
+  try {
+    const res = await fetch('/api/v1/inference/auto');
+    if (!res.ok) {
+      const e = await res.json().catch(() => ({}));
+      throw new Error(e.detail || `HTTP ${res.status}`);
+    }
+    const data = await res.json();
+    setOverlay(data.risk_map);
+    updateSidebar(analyse(data.risk_map), data.source);
+    hideMapOverlay();
+  } catch(e) {
+    const eb = document.getElementById('err-bar');
+    eb.textContent = '⚠ ' + e.message;
+    eb.classList.add('on');
+    document.getElementById('overlay-txt').textContent = 'Inference failed — try again';
+  } finally {
+    btn.disabled = false;
+    btn.innerHTML = '<span style="font-size:16px">⚡</span> Run Auto Inference';
+  }
+}
+
+/* ─────────────────────────────────────────────────────────────
+   Manual inference
+───────────────────────────────────────────────────────────── */
+function buildManualPayload() {
+  const lst  = parseFloat(document.getElementById('sl-lst').value);
+  const ndvi = parseFloat(document.getElementById('sl-ndvi').value);
+  const ndbi = 0.15, ndwi = -0.10, savi = 0.30;
+  const ta   = parseFloat(document.getElementById('sl-temp').value);
+  const rh   = parseFloat(document.getElementById('sl-rh').value);
+  const wind = parseFloat(document.getElementById('sl-wind').value);
+  const mrt  = ta + 8, pet = ta + 5, utci = ta + 6;
+
+  const sat = [
+    Array(64).fill(Array(64).fill(lst)),
+    Array(64).fill(Array(64).fill(ndvi)),
+    Array(64).fill(Array(64).fill(ndbi)),
+    Array(64).fill(Array(64).fill(ndwi)),
+    Array(64).fill(Array(64).fill(savi)),
+  ];
+  const met = Array(8).fill(
+    [ta+4, ta-8, ta, rh, wind, 7.2, 0.0, 1005.0, mrt, pet, utci]
+  );
+  return { satellite_data: sat, meteo_data: met };
+}
+
+async function runManualInference() {
+  const btn = document.getElementById('run-manual-btn');
+  btn.disabled = true;
+  btn.innerHTML = '<div class="spinner"></div> Running…';
+  showMapOverlay('Running manual inference…');
+  document.getElementById('err-bar').classList.remove('on');
+
+  try {
+    const payload = buildManualPayload();
+    const res = await fetch('/api/v1/inference/manual', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload),
+    });
+    if (!res.ok) {
+      const e = await res.json().catch(() => ({}));
+      throw new Error(e.detail || `HTTP ${res.status}`);
+    }
+    const data = await res.json();
+    setOverlay(data.risk_map);
+    updateSidebar(analyse(data.risk_map), 'manual');
+    // Update source badge
+    const sb = document.getElementById('src-badge');
+    sb.textContent = '🖊 Manual';
+    sb.style.display = 'block';
+    hideMapOverlay();
+  } catch(e) {
+    const eb = document.getElementById('err-bar');
+    eb.textContent = '⚠ ' + e.message;
+    eb.classList.add('on');
+    document.getElementById('overlay-txt').textContent = 'Inference failed — try again';
+  } finally {
+    btn.disabled = false;
+    btn.innerHTML = '<span style="font-size:16px">🖊</span> Run Manual Inference';
+  }
+}
+
+/* ─────────────────────────────────────────────────────────────
+   Tab switching
+───────────────────────────────────────────────────────────── */
+function switchTab(mode) {
+  const isAuto = mode === 'auto';
+  document.getElementById('tab-auto').classList.toggle('active', isAuto);
+  document.getElementById('tab-manual').classList.toggle('active', !isAuto);
+  document.getElementById('auto-panel').classList.toggle('hidden', !isAuto);
+  document.getElementById('manual-panel').classList.toggle('active', !isAuto);
+}
+
+/* ─────────────────────────────────────────────────────────────
+   Fetch current meteo
+───────────────────────────────────────────────────────────── */
+async function fetchMeteo() {
+  try {
+    const res = await fetch('/api/v1/meteo/current');
+    if (!res.ok) return;
+    const { data: d } = await res.json();
+    const fmt = v => typeof v === 'number' ? v.toFixed(1) : '—';
+    document.getElementById('m-temp').innerHTML = fmt(d.temp_mean_c)     + '<span class="unt">°C</span>';
+    document.getElementById('m-wind').innerHTML = fmt(d.windspeed_kmh)   + '<span class="unt">km/h</span>';
+    document.getElementById('m-hum').innerHTML  = Math.round(d.humidity_percent) + '<span class="unt">%</span>';
+    document.getElementById('m-mrt').innerHTML  = fmt(d.mrt_c)           + '<span class="unt">°C</span>';
+    document.getElementById('m-pet').innerHTML  = fmt(d.pet_c)           + '<span class="unt">°C</span>';
+    document.getElementById('m-utci').innerHTML = fmt(d.utci_c)          + '<span class="unt">°C</span>';
+
+    // UTCI heat stress colour
+    const u = d.utci_c;
+    const tile = document.getElementById('utci-tile');
+    tile.classList.toggle('hot-utci', u > 38);
+
+    const ts = new Date(d.timestamp);
+    document.getElementById('meteo-ts').textContent = 'Data: ' + ts.toLocaleString();
+  } catch(_) {}
+}
+
+/* ─────────────────────────────────────────────────────────────
+   Health check
+───────────────────────────────────────────────────────────── */
+async function checkHealth() {
+  try {
+    const res = await fetch('/health');
+    const pill = document.getElementById('api-pill');
+    pill.textContent = res.ok ? '⬤ Online' : '⬤ Offline';
+    pill.classList.toggle('offline', !res.ok);
+  } catch { document.getElementById('api-pill').classList.add('offline'); }
+}
+
+/* ─────────────────────────────────────────────────────────────
+   Init
+───────────────────────────────────────────────────────────── */
+(async () => {
+  await checkHealth();
+  fetchMeteo();
+  runInference();
+  setInterval(fetchMeteo, 3 * 60 * 1000);
+})();
+</script>
+</body>
+</html>
