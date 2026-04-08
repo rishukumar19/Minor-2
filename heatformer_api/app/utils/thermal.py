@@ -13,8 +13,8 @@ All methods validated against published Raipur climatology.
 
 from __future__ import annotations
 import numpy as np
-from pythermalcomfort.models import pet_steady, utci
-from pythermalcomfort.utilities import v_relative
+from pythermalcomfort.models import pet_steady, utci # type: ignore
+from pythermalcomfort.utilities import v_relative # type: ignore
 
 # ── Physical constants ────────────────────────────────────────────────────────
 SIGMA   = 5.67e-8   # Stefan-Boltzmann  W m⁻² K⁻⁴

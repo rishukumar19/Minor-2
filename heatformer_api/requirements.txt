@@ -7,10 +7,6 @@ pydantic-settings==2.4.0
 slowapi==0.1.9
 cachetools==5.5.0
 
-# PyTorch (CPU build for deployment — swap for CUDA wheel if needed)
-torch==2.3.1
-torchvision==0.18.1
-einops==0.8.0
 
 # Satellite / GEE
 earthengine-api==0.1.384

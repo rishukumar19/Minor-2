@@ -31,7 +31,7 @@ class Settings(BaseSettings):
     GEE_CACHE_TTL: int = 8 * 86_400       # 8 days (MOD11A2 cycle)
     CDS_CACHE_TTL: int = 86_400           # until tomorrow 12:00 — approx 1 day
     INFERENCE_CACHE_TTL: int = 86_400     # 24 hours
-    METEO_CACHE_TTL: int = 3 * 3_600     # 3 hours
+    METEO_CACHE_TTL: int = 30 * 60       # 30 minutes
 
     # ── API ──────────────────────────────────────────────────────────────
     RATE_LIMIT_AUTO: str = "10/minute"
