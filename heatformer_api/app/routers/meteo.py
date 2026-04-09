@@ -5,7 +5,7 @@ Provides real-time, human-centric meteorological and thermal comfort metrics.
 Powered by Open-Meteo (https://open-meteo.com).
 
 Rate limit : 60 requests/minute per IP  (via SlowAPI)
-Cache      : 3-hour in-process TTLCache  (via cachetools)
+Cache      : 30min in-process TTLCache  (via cachetools)
 """
 
 from __future__ import annotations
