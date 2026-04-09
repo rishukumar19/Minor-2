@@ -181,12 +181,28 @@ class HeatFormer(nn.Module):
 # ── Loader helper ─────────────────────────────────────────────────────────────
 
 def load_model(checkpoint_path: str, device: str = "cpu") -> HeatFormer:
-    """Load HeatFormer from a .pth checkpoint saved by Notebook 3."""
+    """Load HeatFormer from a checkpoint (.pth/.pt)."""
     model = HeatFormer()
-    ckpt  = torch.load(checkpoint_path, map_location=device)
+    ckpt = torch.load(checkpoint_path, map_location=device)
 
-    # Accept both full checkpoint dicts and bare state dicts
-    state = ckpt.get("model", ckpt)
+    # Accept common checkpoint layouts.
+    state = ckpt
+    if isinstance(ckpt, dict):
+        for key in ("model", "state_dict", "model_state_dict"):
+            if key in ckpt and isinstance(ckpt[key], dict):
+                state = ckpt[key]
+                break
+
+    if not isinstance(state, dict):
+        raise RuntimeError(
+            f"Unsupported checkpoint format at {checkpoint_path}: "
+            f"{type(state).__name__}"
+        )
+
+    # Strip DataParallel prefixes when present.
+    if any(k.startswith("module.") for k in state.keys()):
+        state = {k.removeprefix("module."): v for k, v in state.items()}
+
     model.load_state_dict(state, strict=False)
     model.to(device)
     model.eval()

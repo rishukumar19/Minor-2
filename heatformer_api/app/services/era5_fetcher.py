@@ -1,30 +1,16 @@
-"""
-ERA5 meteorological data fetcher via the Copernicus CDS API.
-
-Downloads ERA5 single-level reanalysis for the Raipur bounding box,
-aggregates to daily values, and computes the 11 HeatFormer met features:
-
-  [0]  temp_max      °C
-  [1]  temp_min      °C
-  [2]  temp_mean     °C
-  [3]  humidity      %
-  [4]  wind          m s⁻¹
-  [5]  solar         kWh m⁻²
-  [6]  precip        mm
-  [7]  pressure      hPa
-  [8]  mrt           °C   (Mean Radiant Temperature)
-  [9]  pet           °C   (Physiological Equivalent Temperature)
-  [10] utci          °C   (Universal Thermal Climate Index)
-"""
+"""ERA5 meteorological data fetcher via CDS API."""
 
 from __future__ import annotations
 
-import io
+import datetime
 import logging
 import os
-import datetime
+import re
+import shutil
 import tempfile
+import zipfile
 from pathlib import Path
+from typing import Callable
 
 import numpy as np
 import pandas as pd
@@ -46,9 +32,17 @@ ERA5_VARIABLES = [
 ]
 
 MET_FEATURE_NAMES = [
-    "temp_max", "temp_min", "temp_mean",
-    "humidity", "wind", "solar",
-    "precip", "pressure", "mrt", "pet", "utci",
+    "temp_max",
+    "temp_min",
+    "temp_mean",
+    "humidity",
+    "wind",
+    "solar",
+    "precip",
+    "pressure",
+    "mrt",
+    "pet",
+    "utci",
 ]
 
 
@@ -58,6 +52,80 @@ def _write_cdsapirc(token: str) -> None:
     rc.write_text(f"url: https://cds.climate.copernicus.eu/api\nkey: {token}\n")
 
 
+def _latest_date_from_error(exc: Exception) -> datetime.date | None:
+    """Parse latest-available date from CDS API error text."""
+    msg = str(exc)
+    m = re.search(r"latest date available[^\d]*(\d{4}-\d{2}-\d{2})", msg, re.IGNORECASE)
+    if not m:
+        return None
+    try:
+        return datetime.date.fromisoformat(m.group(1))
+    except ValueError:
+        return None
+
+
+def _date_fields(start: datetime.date, end: datetime.date) -> tuple[list[str], list[str], list[str]]:
+    """Build year/month/day string lists for CDS requests."""
+    rng = pd.date_range(start, end, freq="D")
+    years = sorted({str(d.year) for d in rng})
+    months = sorted({f"{d.month:02d}" for d in rng})
+    days = sorted({f"{d.day:02d}" for d in rng})
+    return years, months, days
+
+
+def _open_dataset_with_fallback(xr, file_path: Path):
+    """Open NetCDF using available engines."""
+    last_exc: Exception | None = None
+    for engine in ("netcdf4", "h5netcdf", "scipy", None):
+        try:
+            if engine is None:
+                return xr.open_dataset(file_path)
+            return xr.open_dataset(file_path, engine=engine)
+        except Exception as exc:
+            last_exc = exc
+    raise RuntimeError(f"Unable to open NetCDF file: {file_path}") from last_exc
+
+
+def _open_downloaded_era5(xr, download_path: str):
+    """
+    Open CDS response file.
+
+    CDS may return either:
+    - a plain .nc file
+    - a .zip with one or more .nc files
+    """
+    path = Path(download_path)
+    opened = []
+    extract_dir: Path | None = None
+
+    if zipfile.is_zipfile(path):
+        extract_dir = Path(tempfile.mkdtemp(prefix="era5_extract_"))
+        with zipfile.ZipFile(path) as zf:
+            zf.extractall(extract_dir)
+
+        nc_files = sorted(extract_dir.glob("*.nc"))
+        if not nc_files:
+            raise RuntimeError(f"CDS zip response had no .nc files: {download_path}")
+
+        for nc in nc_files:
+            opened.append(_open_dataset_with_fallback(xr, nc))
+        ds = xr.merge(opened, compat="override", join="outer")
+    else:
+        opened.append(_open_dataset_with_fallback(xr, path))
+        ds = opened[0]
+
+    def _cleanup() -> None:
+        for d in opened:
+            try:
+                d.close()
+            except Exception:
+                pass
+        if extract_dir and extract_dir.exists():
+            shutil.rmtree(extract_dir, ignore_errors=True)
+
+    return ds, _cleanup
+
+
 def fetch_era5_window(
     token: str,
     lat: float,
@@ -65,33 +133,17 @@ def fetch_era5_window(
     delta: float,
     target_date: datetime.date,
     window_days: int = 8,
-    lst_celsius: float = 35.0,  # fallback if MODIS LST unavailable
+    lst_celsius: float = 35.0,
 ) -> np.ndarray:
     """
-    Download ERA5 for [target_date - window_days + 1 … target_date] and
-    return a (window_days, 11) float32 array of meteorological features.
-
-    Parameters
-    ----------
-    token       : CDS API token
-    lat, lon    : centre of study area
-    delta       : half-width of bounding box in degrees
-    target_date : last day of the window
-    window_days : length of the rolling window (default 8)
-    lst_celsius : MODIS LST for MRT/PET computation (°C)
+    Download ERA5 for [target_date - window_days + 1 ... target_date] and
+    return a (window_days, 11) float32 array.
     """
     import cdsapi
     import xarray as xr
-    from app.utils.thermal import compute_tmrt, compute_pet, compute_utci
+    from app.utils.thermal import compute_pet, compute_tmrt, compute_utci
 
     _write_cdsapirc(token)
-
-    start = target_date - datetime.timedelta(days=window_days - 1)
-    end   = target_date
-
-    years  = sorted({start.year, end.year})
-    months = sorted({d.month for d in pd.date_range(start, end, freq="D")})
-    days   = sorted({d.day   for d in pd.date_range(start, end, freq="D")})
 
     # ERA5 bounding box: [N, W, S, E]
     area = [lat + delta, lon - delta, lat - delta, lon + delta]
@@ -99,26 +151,52 @@ def fetch_era5_window(
     with tempfile.NamedTemporaryFile(suffix=".nc", delete=False) as tmp:
         tmp_path = tmp.name
 
+    ds = None
+    cleanup_ds: Callable[[], None] = lambda: None
+
     try:
         c = cdsapi.Client(quiet=True)
-        c.retrieve(
-            "reanalysis-era5-single-levels",
-            {
-                "product_type":    ["reanalysis"],
-                "variable":        ERA5_VARIABLES,
-                "year":            [str(y) for y in years],
-                "month":           [f"{m:02d}" for m in months],
-                "day":             [f"{d:02d}" for d in days],
-                "time":            ["00:00", "06:00", "12:00", "18:00"],
-                "area":            area,
-                "data_format":     "netcdf",
-                "download_format": "unarchived",
-            },
-            tmp_path,
-        )
+        req_end = target_date
 
-        ds = xr.open_dataset(tmp_path, engine="netcdf4")
-        # Nearest grid point to study centre
+        for _ in range(12):
+            req_start = req_end - datetime.timedelta(days=window_days - 1)
+            years, months, days = _date_fields(req_start, req_end)
+            try:
+                c.retrieve(
+                    "reanalysis-era5-single-levels",
+                    {
+                        "product_type": ["reanalysis"],
+                        "variable": ERA5_VARIABLES,
+                        "year": years,
+                        "month": months,
+                        "day": days,
+                        "time": ["00:00", "06:00", "12:00", "18:00"],
+                        "area": area,
+                        "data_format": "netcdf",
+                        "download_format": "unarchived",
+                    },
+                    tmp_path,
+                )
+                break
+            except Exception as exc:
+                latest = _latest_date_from_error(exc)
+                if latest is not None and latest < req_end:
+                    log.warning(
+                        "ERA5 requested end %s unavailable, retrying at latest %s",
+                        req_end,
+                        latest,
+                    )
+                    req_end = latest
+                    continue
+
+                msg = str(exc)
+                if "None of the data you have requested is available yet" in msg and req_end > datetime.date(1980, 1, 1):
+                    req_end = req_end - datetime.timedelta(days=1)
+                    continue
+                raise
+
+        ds, cleanup_ds = _open_downloaded_era5(xr, tmp_path)
+
         pt = ds.sel(latitude=lat, longitude=lon, method="nearest")
 
         try:
@@ -126,18 +204,17 @@ def fetch_era5_window(
         except Exception:
             times = pd.to_datetime(pt["time"].values)
 
-        t2m  = pt["t2m"].values  - 273.15
-        d2m  = pt["d2m"].values  - 273.15
-        u10  = pt["u10"].values
-        v10  = pt["v10"].values
-        msl  = pt["msl"].values  / 100.0
+        t2m = pt["t2m"].values - 273.15
+        d2m = pt["d2m"].values - 273.15
+        u10 = pt["u10"].values
+        v10 = pt["v10"].values
+        msl = pt["msl"].values / 100.0
         ssrd = pt["ssrd"].values
-        tp   = pt["tp"].values   * 1000.0
+        tp = pt["tp"].values * 1000.0
         strd = pt["strd"].values
-        ds.close()
 
         rows: list[list[float]] = []
-        target_dates = pd.date_range(start, end, freq="D")
+        target_dates = pd.date_range(req_end - datetime.timedelta(days=window_days - 1), req_end, freq="D")
 
         for date in target_dates:
             mask = np.array([t.date() == date.date() for t in times])
@@ -145,44 +222,48 @@ def fetch_era5_window(
                 rows.append([0.0] * 11)
                 continue
 
-            ta_max  = float(t2m[mask].max())
-            ta_min  = float(t2m[mask].min())
+            ta_max = float(t2m[mask].max())
+            ta_min = float(t2m[mask].min())
             ta_mean = float(t2m[mask].mean())
-            wind    = float(np.sqrt(u10[mask] ** 2 + v10[mask] ** 2).mean())
+            wind = float(np.sqrt(u10[mask] ** 2 + v10[mask] ** 2).mean())
 
-            # Relative humidity via Magnus formula
-            es  = 6.112 * np.exp(17.67 * ta_mean / (ta_mean + 243.5))
-            td  = float(d2m[mask].mean())
-            ea  = 6.112 * np.exp(17.67 * td / (td + 243.5))
-            rh  = float(np.clip(100 * ea / es, 0, 100))
+            es = 6.112 * np.exp(17.67 * ta_mean / (ta_mean + 243.5))
+            td = float(d2m[mask].mean())
+            ea = 6.112 * np.exp(17.67 * td / (td + 243.5))
+            rh = float(np.clip(100 * ea / es, 0, 100))
 
             ssrd_day = float(ssrd[mask].sum())
             strd_day = float(strd[mask].sum())
-            solar    = ssrd_day / 3.6e6        # J m⁻² → kWh m⁻²
+            solar = ssrd_day / 3.6e6
 
             doy = date.day_of_year
-
-            mrt_c  = compute_tmrt(ssrd_day, strd_day, lst_celsius, ta_mean, doy=doy,
-                                  lat=lat, lon=lon)
-            pet_c  = compute_pet(ta_mean, rh, wind, ssrd_day, strd_day,
-                                 lst_celsius, doy=doy)
+            mrt_c = compute_tmrt(ssrd_day, strd_day, lst_celsius, ta_mean, doy=doy, lat=lat, lon=lon)
+            pet_c = compute_pet(ta_mean, rh, wind, ssrd_day, strd_day, lst_celsius, doy=doy)
             utci_c = compute_utci(ta_mean, rh, wind, mrt_c)
 
-            rows.append([
-                ta_max, ta_min, ta_mean,
-                rh, wind, solar,
-                float(tp[mask].sum()),
-                float(msl[mask].mean()),
-                mrt_c, pet_c, utci_c,
-            ])
+            rows.append(
+                [
+                    ta_max,
+                    ta_min,
+                    ta_mean,
+                    rh,
+                    wind,
+                    solar,
+                    float(tp[mask].sum()),
+                    float(msl[mask].mean()),
+                    mrt_c,
+                    pet_c,
+                    utci_c,
+                ]
+            )
 
     finally:
+        cleanup_ds()
         if os.path.exists(tmp_path):
             os.remove(tmp_path)
 
-    arr = np.array(rows, dtype=np.float32)   # (window_days, 11)
+    arr = np.array(rows, dtype=np.float32)
 
-    # Pad or trim to exactly window_days rows
     if arr.shape[0] < window_days:
         pad = np.zeros((window_days - arr.shape[0], 11), dtype=np.float32)
         arr = np.vstack([pad, arr])
@@ -199,93 +280,99 @@ def fetch_current_meteo(
     delta: float,
     lst_celsius: float = 35.0,
 ) -> dict:
-    """
-    Fetch today's meteorological figures for the /meteo/current endpoint.
-
-    Returns a dict matching the MeteoData schema.
-    """
+    """Fetch a recent available ERA5 meteorological snapshot."""
     import cdsapi
     import xarray as xr
-    from app.utils.thermal import compute_tmrt, compute_pet, compute_utci
+    from app.utils.thermal import compute_pet, compute_tmrt, compute_utci
 
     _write_cdsapirc(token)
 
-    today = datetime.date.today()
-    # ERA5 has ~5-day latency — use yesterday to guarantee data availability
-    target = today - datetime.timedelta(days=1)
-    area   = [lat + delta, lon - delta, lat - delta, lon + delta]
+    # ERA5 is delayed by around 5 days, so start with a safer offset.
+    req_day = datetime.date.today() - datetime.timedelta(days=5)
+    area = [lat + delta, lon - delta, lat - delta, lon + delta]
 
     with tempfile.NamedTemporaryFile(suffix=".nc", delete=False) as tmp:
         tmp_path = tmp.name
 
+    ds = None
+    cleanup_ds: Callable[[], None] = lambda: None
+
     try:
         c = cdsapi.Client(quiet=True)
-        c.retrieve(
-            "reanalysis-era5-single-levels",
-            {
-                "product_type":    ["reanalysis"],
-                "variable":        ERA5_VARIABLES,
-                "year":            [str(target.year)],
-                "month":           [f"{target.month:02d}"],
-                "day":             [f"{target.day:02d}"],
-                "time":            ["00:00", "06:00", "12:00", "18:00"],
-                "area":            area,
-                "data_format":     "netcdf",
-                "download_format": "unarchived",
-            },
-            tmp_path,
-        )
 
-        ds  = xr.open_dataset(tmp_path, engine="netcdf4")
-        pt  = ds.sel(latitude=lat, longitude=lon, method="nearest")
-        try:
-            times = pd.to_datetime(pt["valid_time"].values)
-        except Exception:
-            times = pd.to_datetime(pt["time"].values)
+        for _ in range(12):
+            try:
+                c.retrieve(
+                    "reanalysis-era5-single-levels",
+                    {
+                        "product_type": ["reanalysis"],
+                        "variable": ERA5_VARIABLES,
+                        "year": [str(req_day.year)],
+                        "month": [f"{req_day.month:02d}"],
+                        "day": [f"{req_day.day:02d}"],
+                        "time": ["00:00", "06:00", "12:00", "18:00"],
+                        "area": area,
+                        "data_format": "netcdf",
+                        "download_format": "unarchived",
+                    },
+                    tmp_path,
+                )
+                break
+            except Exception as exc:
+                latest = _latest_date_from_error(exc)
+                if latest is not None and latest < req_day:
+                    req_day = latest
+                    continue
+                msg = str(exc)
+                if "None of the data you have requested is available yet" in msg and req_day > datetime.date(1980, 1, 1):
+                    req_day = req_day - datetime.timedelta(days=1)
+                    continue
+                raise
 
-        t2m  = pt["t2m"].values  - 273.15
-        d2m  = pt["d2m"].values  - 273.15
-        u10  = pt["u10"].values
-        v10  = pt["v10"].values
-        msl  = pt["msl"].values  / 100.0
+        ds, cleanup_ds = _open_downloaded_era5(xr, tmp_path)
+        pt = ds.sel(latitude=lat, longitude=lon, method="nearest")
+
+        t2m = pt["t2m"].values - 273.15
+        d2m = pt["d2m"].values - 273.15
+        u10 = pt["u10"].values
+        v10 = pt["v10"].values
         ssrd = pt["ssrd"].values
         strd = pt["strd"].values
-        ds.close()
 
         ta_mean = float(t2m.mean())
         wind_ms = float(np.sqrt(u10 ** 2 + v10 ** 2).mean())
         wind_kmh = wind_ms * 3.6
 
-        es  = 6.112 * np.exp(17.67 * ta_mean / (ta_mean + 243.5))
-        td  = float(d2m.mean())
-        ea  = 6.112 * np.exp(17.67 * td / (td + 243.5))
-        rh  = float(np.clip(100 * ea / es, 0, 100))
+        es = 6.112 * np.exp(17.67 * ta_mean / (ta_mean + 243.5))
+        td = float(d2m.mean())
+        ea = 6.112 * np.exp(17.67 * td / (td + 243.5))
+        rh = float(np.clip(100 * ea / es, 0, 100))
 
         ssrd_day = float(ssrd.sum())
         strd_day = float(strd.sum())
 
-        doy    = target.timetuple().tm_yday
-        mrt_c  = compute_tmrt(ssrd_day, strd_day, lst_celsius, ta_mean, doy=doy,
-                               lat=lat, lon=lon)
-        pet_c  = compute_pet(ta_mean, rh, wind_ms, ssrd_day, strd_day,
-                              lst_celsius, doy=doy)
+        doy = req_day.timetuple().tm_yday
+        mrt_c = compute_tmrt(ssrd_day, strd_day, lst_celsius, ta_mean, doy=doy, lat=lat, lon=lon)
+        pet_c = compute_pet(ta_mean, rh, wind_ms, ssrd_day, strd_day, lst_celsius, doy=doy)
         utci_c = compute_utci(ta_mean, rh, wind_ms, mrt_c)
 
         timestamp = datetime.datetime.combine(
-            target, datetime.time(12, 0, 0),
+            req_day,
+            datetime.time(12, 0, 0),
             tzinfo=datetime.timezone.utc,
         ).isoformat().replace("+00:00", ".000Z")
 
     finally:
+        cleanup_ds()
         if os.path.exists(tmp_path):
             os.remove(tmp_path)
 
     return {
-        "timestamp":        timestamp,
-        "temp_mean_c":      round(ta_mean, 2),
-        "windspeed_kmh":    round(wind_kmh, 2),
+        "timestamp": timestamp,
+        "temp_mean_c": round(ta_mean, 2),
+        "windspeed_kmh": round(wind_kmh, 2),
         "humidity_percent": round(rh, 1),
-        "mrt_c":            round(mrt_c, 2),
-        "pet_c":            round(pet_c, 2),
-        "utci_c":           round(utci_c, 2),
+        "mrt_c": round(mrt_c, 2),
+        "pet_c": round(pet_c, 2),
+        "utci_c": round(utci_c, 2),
     }

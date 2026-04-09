@@ -29,8 +29,24 @@ def _init_gee(project: str) -> None:
     if _ee_ready:
         return
     import ee
-    ee.Initialize(project=project)
-    _ee_ready = True
+    try:
+        ee.Initialize(project=project)
+        _ee_ready = True
+    except Exception as exc:
+        msg = str(exc)
+        if "Not signed up for Earth Engine" in msg or "project is not registered" in msg:
+            raise RuntimeError(
+                "Earth Engine account/project is not activated. Complete signup at "
+                "https://developers.google.com/earth-engine/guides/access and ensure "
+                f"GEE_PROJECT is valid ({project})."
+            ) from exc
+        if "serviceusage.services.use" in msg or "PERMISSION_DENIED" in msg:
+            raise RuntimeError(
+                "Earth Engine project permission missing. Grant your caller "
+                "'roles/serviceusage.serviceUsageConsumer' on project "
+                f"'{project}', then retry."
+            ) from exc
+        raise
 
 
 # ── Helpers ────────────────────────────────────────────────────────────────────

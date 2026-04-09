@@ -609,9 +609,9 @@
         <span class="badge" style="font-size:9px">🤖 HeatFormer v1.1</span>
       </div>
       <div style="display:flex;gap:14px;margin-top:14px;font-size:10px;color:var(--muted)">
-        <a href="/docs"  target="_blank" style="color:var(--accent);text-decoration:none">API Docs ↗</a>
-        <a href="/redoc" target="_blank" style="color:var(--muted);text-decoration:none">ReDoc ↗</a>
-        <a href="/health" target="_blank" style="color:var(--muted);text-decoration:none">Health ↗</a>
+        <a id="docs-link" href="/docs"  target="_blank" style="color:var(--accent);text-decoration:none">API Docs ↗</a>
+        <a id="redoc-link" href="/redoc" target="_blank" style="color:var(--muted);text-decoration:none">ReDoc ↗</a>
+        <a id="health-link" href="/health" target="_blank" style="color:var(--muted);text-decoration:none">Health ↗</a>
       </div>
     </div>
 
@@ -635,6 +635,28 @@ const RGBA = [
 ];
 const LABELS = ['Low', 'Moderate', 'High', 'Extreme'];
 const EMOJIS = ['🟢', '🟡', '🟠', '🔴'];
+
+const API_BASE = (() => {
+  const forced = window.localStorage.getItem('HEATFORMER_API_BASE');
+  if (forced) {
+    return forced.replace(/\/+$/, '');
+  }
+  if (window.location.port === '5500' || window.location.protocol === 'file:') {
+    return 'http://127.0.0.1:8000';
+  }
+  return window.location.origin;
+})();
+
+const apiUrl = (path) => `${API_BASE}${path}`;
+
+function setBackendLinks() {
+  const docs = document.getElementById('docs-link');
+  const redoc = document.getElementById('redoc-link');
+  const health = document.getElementById('health-link');
+  if (docs) docs.href = apiUrl('/docs');
+  if (redoc) redoc.href = apiUrl('/redoc');
+  if (health) health.href = apiUrl('/health');
+}
 
 /* ─────────────────────────────────────────────────────────────
    Initialise Leaflet
@@ -773,7 +795,7 @@ async function runInference() {
   document.getElementById('err-bar').classList.remove('on');
 
   try {
-    const res = await fetch('/api/v1/inference/auto');
+    const res = await fetch(apiUrl('/api/v1/inference/auto'));
     if (!res.ok) {
       const e = await res.json().catch(() => ({}));
       throw new Error(e.detail || `HTTP ${res.status}`);
@@ -827,7 +849,7 @@ async function runManualInference() {
 
   try {
     const payload = buildManualPayload();
-    const res = await fetch('/api/v1/inference/manual', {
+    const res = await fetch(apiUrl('/api/v1/inference/manual'), {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(payload),
@@ -871,7 +893,7 @@ function switchTab(mode) {
 ───────────────────────────────────────────────────────────── */
 async function fetchMeteo() {
   try {
-    const res = await fetch('/api/v1/meteo/current');
+    const res = await fetch(apiUrl('/api/v1/meteo/current'));
     if (!res.ok) return;
     const { data: d } = await res.json();
     const fmt = v => typeof v === 'number' ? v.toFixed(1) : '—';
@@ -897,7 +919,7 @@ async function fetchMeteo() {
 ───────────────────────────────────────────────────────────── */
 async function checkHealth() {
   try {
-    const res = await fetch('/health');
+    const res = await fetch(apiUrl('/health'));
     const pill = document.getElementById('api-pill');
     pill.textContent = res.ok ? '⬤ Online' : '⬤ Offline';
     pill.classList.toggle('offline', !res.ok);
@@ -908,6 +930,7 @@ async function checkHealth() {
    Init
 ───────────────────────────────────────────────────────────── */
 (async () => {
+  setBackendLinks();
   await checkHealth();
   fetchMeteo();
   runInference();
